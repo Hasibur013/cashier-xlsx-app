@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+temp/
+.env
+.DS_Store
+
+# Real business data — keep private, don't publish on a public Space.
+# Comment this out if you want to ship a template workbook with the repo.
+Cafe Daily Input July.xlsx
