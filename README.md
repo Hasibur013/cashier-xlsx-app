@@ -5,8 +5,11 @@ colorFrom: blue
 colorTo: green
 sdk: gradio
 sdk_version: 4.44.0
+python_version: '3.12'
 app_file: app.py
 pinned: false
+license: apache-2.0
+short_description: Chayabithi Cafe — Cashier SMS → Excel Updater
 ---
 
 # ☕ Chayabithi Cafe — Cashier SMS → Excel Updater
