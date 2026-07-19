@@ -214,7 +214,12 @@ def parse_sms(text: str):
             # ignore category subtotals ("মোট"/"total") silently
             if any(tok in name_region for tok in ("মোট", "Total", "total", "grand", "Grand", "লাভ")):
                 continue
-            warnings.append(f"অচেনা আইটেম বাদ পড়েছে: '{name_region.strip()[:40]}' (rate={rate}, qty={qty})")
+            # Only warn when real sales would be lost. A qty of 0 (e.g. "ফ্রাইড
+            # রাইস" which has no row in this workbook) is nothing to record.
+            if qty > 0:
+                warnings.append(
+                    f"অচেনা আইটেম বাদ পড়েছে: '{name_line.strip()[:40]}' (qty={qty})"
+                )
             continue
         records.append({"sl": sl, "qty": qty, "rate": rate, "total": total})
 

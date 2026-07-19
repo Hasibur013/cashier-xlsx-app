@@ -4,6 +4,8 @@ __pycache__/
 temp/
 .env
 .DS_Store
+*.log
+updated_*.xlsx
 
 # Real business data — keep private, don't publish on a public Space.
 # Comment this out if you want to ship a template workbook with the repo.

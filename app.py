@@ -17,6 +17,7 @@ from pathlib import Path
 import gradio as gr
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
+from openpyxl.formula.translate import Translator
 
 import parser_core as pc
 
@@ -85,7 +86,60 @@ def _num(v):
     return int(f) if f == int(f) else f
 
 
-def update_workbook(xlsx_path: str, records, jumping, date):
+def _pick_ref_col(ws, header_row):
+    """A date column that already has its formulas filled, to copy from."""
+    for c in range(3, ws.max_column + 1):
+        if c == ws.max_column:  # skip the "Total" summary column
+            continue
+        for r in range(header_row, ws.max_row + 1):
+            v = ws.cell(r, c).value
+            if isinstance(v, str) and v.startswith("="):
+                return c
+    return None
+
+
+def _fill_formulas(ws, col, header_row):
+    """Copy every formula (item totals, day Total, Grand Total, Per Customer…)
+    from a reference date column into ``col``, translating cell references.
+
+    This mirrors exactly how the other days are computed, so the new day's
+    daily total and grand total appear automatically."""
+    ref_col = _pick_ref_col(ws, header_row)
+    if ref_col is None:
+        return
+    ref_letter = get_column_letter(ref_col)
+    col_letter = get_column_letter(col)
+    for r in range(1, ws.max_row + 1):
+        ref = ws.cell(r, ref_col).value
+        if not (isinstance(ref, str) and ref.startswith("=")):
+            continue
+        if ws.cell(r, col).value not in (None, ""):
+            continue
+        label = str(ws.cell(r, 2).value or "").strip().lower()
+        # "Per Customer" = Total / Customer-Num. Skip it when the customer
+        # count for this day is missing, to avoid a #DIV/0! error.
+        if "per customer" in label and ws.cell(r - 1, col).value in (None, ""):
+            continue
+        ws.cell(r, col).value = Translator(
+            ref, origin=f"{ref_letter}{r}"
+        ).translate_formula(f"{col_letter}{r}")
+
+
+def _copy_label(ws, row, col):
+    """Copy a repeated text label (e.g. the item name) from the first filled
+    date column into ``col`` when it is empty."""
+    if ws.cell(row, col).value not in (None, ""):
+        return
+    for cc in range(3, ws.max_column):  # skip the trailing "Total" column
+        if cc == col:
+            continue
+        v = ws.cell(row, cc).value
+        if v not in (None, ""):
+            ws.cell(row, col).value = v
+            return
+
+
+def update_workbook(xlsx_path: str, records, jumping, date, customer_num=None):
     wb = load_workbook(xlsx_path)
     ws = wb[wb.sheetnames[0]]
 
@@ -106,13 +160,11 @@ def update_workbook(xlsx_path: str, records, jumping, date):
         if not rows:
             skipped.append(rec["sl"])
             continue
-        _, qty_row, rate_row, total_row = rows
+        name_row, qty_row, rate_row, total_row = rows
+        _copy_label(ws, name_row, col)  # ensure the item name shows in this column
         ws.cell(qty_row, col).value = _num(rec["qty"])
         if ws.cell(rate_row, col).value in (None, "") and rec.get("rate"):
             ws.cell(rate_row, col).value = _num(rec["rate"])
-        # keep/repair the total formula
-        if ws.cell(total_row, col).value in (None, ""):
-            ws.cell(total_row, col).value = f"={col_letter}{qty_row}*{col_letter}{rate_row}"
         written.append(rec["sl"])
 
     if jumping:
@@ -121,11 +173,21 @@ def update_workbook(xlsx_path: str, records, jumping, date):
             ws.cell(jr["person"], col).value = _num(jumping["person"])
             if ws.cell(jr["taka"], col).value in (None, "") and jumping.get("taka"):
                 ws.cell(jr["taka"], col).value = _num(jumping["taka"])
-            if ws.cell(jr["total"], col).value in (None, ""):
-                ws.cell(jr["total"], col).value = (
-                    f"={col_letter}{jr['person']}*{col_letter}{jr['taka']}"
-                )
 
+    # Optional customer count -> lets "Per Customer" compute below.
+    if customer_num not in (None, ""):
+        for r in range(1, ws.max_row + 1):
+            if str(ws.cell(r, 2).value).strip() == "Customer Num":
+                ws.cell(r, col).value = _num(customer_num)
+                break
+
+    # Fill item-total, daily-Total, Grand-Total (and Per Customer) formulas by
+    # translating them from an already-filled day column.
+    _fill_formulas(ws, col, header_row)
+
+    # The temp dir can be wiped by a page refresh (unload) or the clear button,
+    # so make sure it exists right before saving.
+    TEMP_DIR.mkdir(parents=True, exist_ok=True)
     out_path = TEMP_DIR / f"updated_{uuid.uuid4().hex}.xlsx"
     wb.save(out_path)
     return str(out_path), col_letter, written, skipped
@@ -144,7 +206,7 @@ def _get_groq_client():
         return None
 
 
-def process(sms_text, xlsx_file, engine):
+def process(sms_text, xlsx_file, engine, customer_num=None):
     if xlsx_file is None:
         raise gr.Error("অনুগ্রহ করে মাসিক XLSX ফাইলটি আপলোড করুন।")
     if not (sms_text or "").strip():
@@ -174,7 +236,7 @@ def process(sms_text, xlsx_file, engine):
         raise gr.Error("কোনো আইটেম শনাক্ত করা যায়নি। মেসেজ ফরম্যাট যাচাই করুন।")
 
     out_path, col_letter, written, skipped = update_workbook(
-        xlsx_file.name, records, jumping, date
+        xlsx_file.name, records, jumping, date, customer_num
     )
 
     rows = []
@@ -220,6 +282,11 @@ with gr.Blocks(title="Chayabithi Cafe — SMS to Excel", analytics_enabled=False
         with gr.Column(scale=1):
             sms = gr.Textbox(lines=20, label="ক্যাশিয়ারের SMS", placeholder=SAMPLE)
             xlsx = gr.File(label="মাসিক XLSX আপলোড", file_types=[".xlsx"])
+            customer_num = gr.Number(
+                label="গ্রাহক সংখ্যা (Customer number) — ঐচ্ছিক",
+                precision=0,
+                value=None,
+            )
             engine = gr.Radio(
                 ["Offline (দ্রুত, বিনামূল্যে)", "AI (Groq LLM)"],
                 value="Offline (দ্রুত, বিনামূল্যে)",
@@ -237,7 +304,7 @@ with gr.Blocks(title="Chayabithi Cafe — SMS to Excel", analytics_enabled=False
             )
             out_xlsx = gr.File(label="আপডেটেড XLSX ডাউনলোড")
 
-    btn.click(process, inputs=[sms, xlsx, engine], outputs=[summary, table, out_xlsx])
+    btn.click(process, inputs=[sms, xlsx, engine, customer_num], outputs=[summary, table, out_xlsx])
     clear_btn.click(clear_backend, outputs=[summary, table, out_xlsx])
     demo.unload(lambda: shutil.rmtree(TEMP_DIR, ignore_errors=True))
 
