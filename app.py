@@ -21,6 +21,18 @@ from openpyxl.formula.translate import Translator
 
 import parser_core as pc
 
+# ZeroGPU (free-tier Spaces): at least one @spaces.GPU is required at startup.
+# Effect-free on CPU / local runs when the package is missing.
+try:
+    import spaces
+except ImportError:  # local / non-ZeroGPU
+    class spaces:  # type: ignore
+        @staticmethod
+        def GPU(fn=None, **_kwargs):
+            if fn is None:
+                return lambda f: f
+            return fn
+
 APP_DIR = Path(__file__).parent.resolve()
 TEMP_DIR = APP_DIR / "temp"
 TEMP_DIR.mkdir(exist_ok=True)
@@ -206,6 +218,7 @@ def _get_groq_client():
         return None
 
 
+@spaces.GPU(duration=60)
 def process(sms_text, xlsx_file, engine, customer_num=None):
     if xlsx_file is None:
         raise gr.Error("অনুগ্রহ করে মাসিক XLSX ফাইলটি আপলোড করুন।")
@@ -309,4 +322,5 @@ with gr.Blocks(title="Chayabithi Cafe — SMS to Excel", analytics_enabled=False
     demo.unload(lambda: shutil.rmtree(TEMP_DIR, ignore_errors=True))
 
 if __name__ == "__main__":
-    demo.launch()
+    # SSR can kill the Space process after bind; keep classic Gradio serve.
+    demo.launch(ssr_mode=False)
